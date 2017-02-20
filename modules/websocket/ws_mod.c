@@ -36,6 +36,7 @@
 #include "../../lib/kmi/mi.h"
 #include "../../mem/mem.h"
 #include "../../mod_fix.h"
+#include "../../pvar.h"
 #include "../../parser/msg_parser.h"
 #include "ws_conn.h"
 #include "ws_handshake.h"
@@ -52,6 +53,9 @@ static int mod_init(void);
 static int child_init(int rank);
 static void destroy(void);
 static int ws_close_fixup(void** param, int param_no);
+
+static int pv_get_ws_real_src_ip(struct sip_msg *msg, pv_param_t *param,
+                pv_value_t *res);
 
 sl_api_t ws_slb;
 
@@ -159,6 +163,15 @@ static mi_export_t mi_cmds[] =
 	{ 0, 0, 0, 0, 0 }
 };
 
+static pv_export_t mod_pvs[] = {
+        {{"ws_real_src_ip", (sizeof("ws_real_src_ip")-1)}, /* */
+                PVT_OTHER, pv_get_ws_real_src_ip, 0,
+                0, 0, 0, 0},
+
+        { {0, 0}, 0, 0, 0, 0, 0, 0, 0 }
+};
+
+
 struct module_exports exports= 
 {
 	"websocket",
@@ -167,7 +180,7 @@ struct module_exports exports=
 	params,			/* Exported parameters */
 	stats,			/* exported statistics */
 	mi_cmds,		/* exported MI functions */
-	0,			/* exported pseudo-variables */
+	mod_pvs,		/* exported pseudo-variables */
 	0,			/* extra processes */
 	mod_init,		/* module initialization function */
 	0,			/* response function */
@@ -340,4 +353,41 @@ static int ws_close_fixup(void** param, int param_no)
 	default:
 		return 0;
 	}
+}
+
+static int pv_get_ws_real_src_ip(struct sip_msg *msg, pv_param_t *param,
+                pv_value_t *res)
+{
+	ws_connection_t *wsc;
+	str ip_str;
+	int wscid, len;
+	static char buff[IP_ADDR_MAX_STR_SIZE];
+
+	if (msg == NULL) {
+		return -1;
+	}
+
+	if ((wsc = wsconn_get(msg->rcv.proto_reserved1)) == NULL) {
+		LM_ERR("$ws_real_src_ip cannot retrieve websocket connection\n");
+		return pv_get_null(msg, param, res);
+	}
+
+	wscid = wsc->id;
+
+	if (wsc->real_src_ip[0] == 0) {
+		wsconn_put(wsc);
+		LM_DBG("$ws_real_src_ip wscid %d real_src_ip is not set\n", wscid);
+		return pv_get_null(msg, param, res);
+	}
+
+	LM_DBG("$ws_real_src_ip wscid %d wsc->real_src_ip is %s (%d)\n", wscid, wsc->real_src_ip, (int)strlen(wsc->real_src_ip));
+	len = snprintf(buff, IP_ADDR_MAX_STR_SIZE, "%s", wsc->real_src_ip);
+	buff[len] = 0;
+
+	wsconn_put(wsc);
+
+	ip_str.s = (char *)buff;
+	ip_str.len = strlen(buff);
+	LM_DBG("$ws_real_src_ip wscid %d real_src_ip is %s (%d)\n", wscid, ip_str.s, ip_str.len);
+	return pv_get_strval(msg, param, res, &ip_str);
 }
